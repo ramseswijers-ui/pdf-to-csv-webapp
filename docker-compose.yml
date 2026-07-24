@@ -8,7 +8,6 @@ services:
     volumes:
       - ./jobs:/app/jobs
     networks:
-    networks:
       - arr_network
 
 networks:
