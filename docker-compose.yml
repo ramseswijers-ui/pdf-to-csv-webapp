@@ -1,0 +1,9 @@
+services:
+  pdf-to-csv:
+    build: .
+    container_name: pdf-to-csv-webapp
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    volumes:
+      - ./jobs:/app/jobs
