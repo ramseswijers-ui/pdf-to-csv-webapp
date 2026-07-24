@@ -2,8 +2,15 @@ services:
   pdf-to-csv:
     build: .
     container_name: pdf-to-csv-webapp
+    restart: unless-stopped
     ports:
       - "8090:8000"
-    restart: unless-stopped
     volumes:
       - ./jobs:/app/jobs
+    networks:
+    networks:
+      - arr_network
+
+networks:
+  arr_network:
+    external: true
