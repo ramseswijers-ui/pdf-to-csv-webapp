@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ base }} — results</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="sheet">
+    <div class="frame">
+      <span class="tick-bl"></span><span class="tick-br"></span>
+      <p class="eyebrow">Doc.-Type: RESULT · {{ base }}</p>
+      <h1>Extraction complete</h1>
+      <p class="sub">Preview below, or download the full CSVs.</p>
+
+      <div class="summary-row">
+        <span class="stamp-badge">✓ Processed</span>
+      </div>
+
+      <div class="actions" style="margin-bottom: 28px;">
+        <a class="btn" href="{{ url_for('download_zip', job_id=job_id) }}">Download all (.zip)</a>
+        <a class="btn secondary" href="{{ url_for('index') }}">Convert another PDF</a>
+      </div>
+
+      {% for key, title in [('titleblock', 'Title block'), ('callouts', 'Callouts'), ('full_text', 'Full text')] %}
+        {% set p = previews[key] %}
+        <div class="panel">
+          <div class="panel-head">
+            <h2>{{ title }}</h2>
+            <span class="count">{{ p.total }} row{{ 's' if p.total != 1 else '' }}</span>
+            <a class="dl" href="{{ url_for('download', job_id=job_id, which=key) }}">Download CSV</a>
+          </div>
+          {% if p.rows %}
+            <div class="table-wrap">
+              <table class="data">
+                <thead>
+                  <tr>{% for h in p.header %}<th>{{ h }}</th>{% endfor %}</tr>
+                </thead>
+                <tbody>
+                  {% for row in p.rows %}
+                    <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% if p.total > preview_rows %}
+              <div class="more-note">+ {{ p.total - preview_rows }} more row{{ 's' if p.total - preview_rows != 1 else '' }} in the downloaded CSV</div>
+            {% endif %}
+          {% else %}
+            <div class="more-note">No rows found for this category.</div>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+
+    <footer class="note">
+      Heuristic extraction — good for a fast overview and cross-check, not
+      a substitute for reading the source drawing on anything
+      safety- or spec-critical.
+    </footer>
+  </div>
+</body>
+</html>

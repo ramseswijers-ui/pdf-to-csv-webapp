@@ -1,0 +1,262 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
+
+:root {
+  --blue-900: #0c2136;
+  --blue-800: #123452;
+  --blue-700: #1a4468;
+  --line: #bcd6ea;
+  --line-dim: rgba(188, 214, 234, 0.35);
+  --line-bright: #eaf6ff;
+  --stamp: #c1440e;
+  --stamp-dark: #9c3608;
+  --paper: #f3ede1;
+  --paper-line: #d8cfba;
+  --ink: #1c1c1a;
+  --ok: #4caf7d;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background-color: var(--blue-900);
+  background-image:
+    linear-gradient(var(--line-dim) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line-dim) 1px, transparent 1px);
+  background-size: 28px 28px;
+  color: var(--line-bright);
+  font-family: 'Inter', sans-serif;
+}
+
+.sheet {
+  max-width: 880px;
+  margin: 48px auto;
+  padding: 0 20px 60px;
+}
+
+/* Registration corner marks - a nod to real drawing-sheet borders */
+.frame {
+  position: relative;
+  border: 1.5px solid var(--line);
+  padding: 40px 40px 32px;
+  background: rgba(10, 26, 43, 0.45);
+}
+.frame::before, .frame::after,
+.frame .tick-br, .frame .tick-bl {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--line-bright);
+}
+.frame::before { top: -1.5px; left: -1.5px; border-right: none; border-bottom: none; }
+.frame::after { top: -1.5px; right: -1.5px; border-left: none; border-bottom: none; }
+.frame .tick-bl { bottom: -1.5px; left: -1.5px; border-right: none; border-top: none; }
+.frame .tick-br { bottom: -1.5px; right: -1.5px; border-left: none; border-top: none; }
+
+.eyebrow {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--line);
+  margin: 0 0 10px;
+}
+
+h1 {
+  font-family: 'IBM Plex Mono', monospace;
+  font-weight: 700;
+  font-size: 30px;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+  color: var(--line-bright);
+}
+
+.sub {
+  color: var(--line);
+  font-size: 15px;
+  line-height: 1.55;
+  max-width: 560px;
+  margin: 0 0 32px;
+}
+
+/* --- Upload dropzone --- */
+.dropzone {
+  border: 1.5px dashed var(--line);
+  padding: 36px 20px;
+  text-align: center;
+  border-radius: 2px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+  cursor: pointer;
+}
+.dropzone.drag {
+  border-color: var(--stamp);
+  background: rgba(193, 68, 14, 0.08);
+}
+.dropzone input[type="file"] { display: none; }
+.dropzone .dz-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
+  color: var(--line-bright);
+}
+.dropzone .dz-hint {
+  font-size: 12.5px;
+  color: var(--line);
+  margin-top: 8px;
+}
+.dropzone .dz-filename {
+  margin-top: 14px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  color: var(--ok);
+  min-height: 18px;
+}
+
+button.submit, a.btn {
+  display: inline-block;
+  font-family: 'IBM Plex Mono', monospace;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--paper);
+  background: var(--stamp);
+  border: 1.5px solid var(--stamp-dark);
+  padding: 13px 22px;
+  border-radius: 2px;
+  cursor: pointer;
+  text-decoration: none;
+  margin-top: 22px;
+  transition: transform 0.08s ease, background 0.15s ease;
+}
+button.submit:hover, a.btn:hover { background: #d94f13; }
+button.submit:active { transform: translateY(1px); }
+button.submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
+a.btn.secondary {
+  background: transparent;
+  color: var(--line-bright);
+  border-color: var(--line);
+}
+a.btn.secondary:hover { background: rgba(234,246,255,0.08); }
+
+.flash {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  color: var(--stamp);
+  border: 1px solid var(--stamp);
+  background: rgba(193, 68, 14, 0.08);
+  padding: 10px 14px;
+  margin-bottom: 20px;
+}
+
+.steps {
+  display: flex;
+  gap: 22px;
+  margin-top: 34px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line-dim);
+}
+.step { flex: 1; }
+.step .num {
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--stamp);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.step .desc { font-size: 13px; color: var(--line); line-height: 1.5; }
+
+/* --- Results page --- */
+.summary-row {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 28px;
+  flex-wrap: wrap;
+}
+.stamp-badge {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  border: 1.5px solid var(--ok);
+  color: var(--ok);
+  padding: 5px 10px;
+  border-radius: 2px;
+  transform: rotate(-1.5deg);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.panel {
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--paper-line);
+  margin-bottom: 26px;
+  overflow: hidden;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--paper-line);
+  background: #ece4d3;
+}
+.panel-head h2 {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+.panel-head .count {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: #6b6558;
+}
+.panel-head .dl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--stamp-dark);
+  text-decoration: none;
+  border-bottom: 1px solid var(--stamp-dark);
+}
+
+.table-wrap { overflow-x: auto; max-height: 340px; }
+table.data {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12.5px;
+}
+table.data th {
+  text-align: left;
+  padding: 8px 12px;
+  background: #e4dac1;
+  position: sticky;
+  top: 0;
+  border-bottom: 1px solid var(--paper-line);
+  white-space: nowrap;
+}
+table.data td {
+  padding: 6px 12px;
+  border-bottom: 1px solid #e6ddc8;
+  white-space: nowrap;
+}
+table.data tr:nth-child(even) td { background: #ede6d5; }
+.more-note {
+  padding: 8px 18px;
+  font-size: 12px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: #6b6558;
+  border-top: 1px solid var(--paper-line);
+}
+
+.actions { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+
+footer.note {
+  margin-top: 30px;
+  font-size: 12.5px;
+  color: var(--line);
+  line-height: 1.6;
+}
+footer.note a { color: var(--line-bright); }

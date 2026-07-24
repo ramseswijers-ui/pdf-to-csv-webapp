@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Technical PDF → CSV</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="sheet">
+    <div class="frame">
+      <span class="tick-bl"></span><span class="tick-br"></span>
+      <p class="eyebrow">Doc.-Type: TOOL · Sheet 1 of 1</p>
+      <h1>Technical PDF → CSV</h1>
+      <p class="sub">
+        Upload a datasheet or engineering drawing. It pulls out the
+        title-block fields, every dimension &amp; tolerance callout, and a
+        full text dump — three CSVs you can scan or hand to a spreadsheet
+        for double-checking.
+      </p>
+
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+          {% for m in messages %}
+            <div class="flash">{{ m }}</div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
+
+      <form action="{{ url_for('convert') }}" method="post" enctype="multipart/form-data" id="upload-form">
+        <label class="dropzone" id="dropzone" for="file-input">
+          <div class="dz-label">Drop a PDF here, or click to choose one</div>
+          <div class="dz-hint">PDF with a real text layer · up to {{ max_mb }} MB</div>
+          <div class="dz-filename" id="dz-filename"></div>
+          <input type="file" id="file-input" name="pdf" accept="application/pdf">
+        </label>
+        <button type="submit" class="submit" id="submit-btn" disabled>Convert to CSV</button>
+      </form>
+
+      <div class="steps">
+        <div class="step">
+          <div class="num">01</div>
+          <div class="desc">Title block — title, material, scale, doc number, finish, dates.</div>
+        </div>
+        <div class="step">
+          <div class="num">02</div>
+          <div class="desc">Callouts — every dimension, tolerance, and thread spec, positioned on the page.</div>
+        </div>
+        <div class="step">
+          <div class="num">03</div>
+          <div class="desc">Full text — a raw line-by-line dump, as a fallback overview.</div>
+        </div>
+      </div>
+    </div>
+
+    <footer class="note">
+      Works best on PDFs exported from CAD/PLM systems (a real text layer,
+      not a scan). Field-label matching and callout grouping are
+      heuristics meant to speed up manual review — always confirm
+      anything safety- or spec-critical against the source drawing.
+    </footer>
+  </div>
+
+  <script>
+    const dropzone = document.getElementById('dropzone');
+    const input = document.getElementById('file-input');
+    const filenameEl = document.getElementById('dz-filename');
+    const submitBtn = document.getElementById('submit-btn');
+
+    function setFile(file) {
+      if (file && file.name.toLowerCase().endsWith('.pdf')) {
+        filenameEl.textContent = '✓ ' + file.name;
+        submitBtn.disabled = false;
+      }
+    }
+
+    input.addEventListener('change', () => setFile(input.files[0]));
+
+    ['dragenter', 'dragover'].forEach(evt =>
+      dropzone.addEventListener(evt, e => {
+        e.preventDefault();
+        dropzone.classList.add('drag');
+      })
+    );
+    ['dragleave', 'drop'].forEach(evt =>
+      dropzone.addEventListener(evt, e => {
+        e.preventDefault();
+        dropzone.classList.remove('drag');
+      })
+    );
+    dropzone.addEventListener('drop', e => {
+      const file = e.dataTransfer.files[0];
+      if (file) {
+        input.files = e.dataTransfer.files;
+        setFile(file);
+      }
+    });
+
+    document.getElementById('upload-form').addEventListener('submit', () => {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Converting…';
+    });
+  </script>
+</body>
+</html>
