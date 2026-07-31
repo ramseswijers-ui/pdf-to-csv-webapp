@@ -228,6 +228,133 @@ def extract_titleblock(words):
     return rows
 
 
+def parse_requirement(text):
+    """Split a callout's text into (requirement, upper_tol, lower_tol).
+    Handles the common tolerance notations seen on drawings: '±0,5',
+    '+0,2/-0,0', '+0,2 -0,0'. Falls back to blank tolerances (with the
+    full text kept as the requirement) when no clear pattern is found -
+    still useful as a checklist line, just without split-out tolerances."""
+    t = text.strip()
+
+    m = re.search(r'±\s*(\d+[.,]\d+|\d+)', t)
+    if m:
+        v = m.group(1)
+        return t, f"+{v}", f"-{v}"
+
+    m = re.search(r'\+\s*(\d+[.,]\d+|\d+)\s*/\s*-\s*(\d+[.,]\d+|\d+)', t)
+    if m:
+        return t, f"+{m.group(1)}", f"-{m.group(2)}"
+
+    nums = re.findall(r'[+-]\s*\d+[.,]?\d*', t)
+    pos = next((n.replace(' ', '') for n in nums if n.strip().startswith('+')), None)
+    neg = next((n.replace(' ', '') for n in nums if n.strip().startswith('-')), None)
+    if pos and neg:
+        return t, pos, neg
+
+    return t, "", ""
+
+
+# Default ISO 5457-style zoning grid, matching the column/row reference
+# marks printed on the border of most engineering drawings (numbers along
+# the top/bottom, letters down the sides). Edit these if your drawing
+# template uses a different sheet size / zone count.
+ZONE_COLS = 6   # labeled COLS..1, left to right
+ZONE_ROWS = 4   # labeled A..(last letter), bottom to top
+
+
+def zone_for_position(x, top, page_width, page_height):
+    col_idx = min(int(x / (page_width / ZONE_COLS)), ZONE_COLS - 1)
+    col_label = str(ZONE_COLS - col_idx)
+    row_idx = min(int(top / (page_height / ZONE_ROWS)), ZONE_ROWS - 1)
+    row_label = chr(ord('A') + (ZONE_ROWS - 1 - row_idx))
+    return f"{col_label}-{row_label}"
+
+
+FAI_HEADER = [
+    "Char No.", "Reference Location", "Operation", "Requirement",
+    "Upper Tol", "Lower Tol", "Results", "Designed Tooling",
+    "Non-Conf. Number", "Deviation", "Error", "Notes / Source Text",
+]
+
+
+def build_fai_checklist(pdf_path, words, clusters, tb_rows):
+    """Build one FAI-style inspection checklist: a metadata block (part
+    name, doc number, etc. - pulled from the title block) followed by one
+    row per dimension/tolerance callout, in the same column layout as a
+    standard First Article Inspection 'Characteristic Accountability'
+    form - ready to fill in Results during a physical check."""
+    with pdfplumber.open(pdf_path) as pdf:
+        page = pdf.pages[0]
+        page_w, page_h = page.width, page.height
+
+    # pull a few useful fields out of the title block for the metadata rows
+    pairs = []
+    for i, r in enumerate(tb_rows):
+        if r["row_type"] == "label" and i + 1 < len(tb_rows) and tb_rows[i + 1]["row_type"] == "value_below":
+            pairs.append((r["line_text"], tb_rows[i + 1]["line_text"]))
+
+    def find_pair(*keywords):
+        for label, value in pairs:
+            low = label.lower()
+            if any(k in low for k in keywords):
+                return value
+        return ""
+
+    meta_rows_raw = [
+        ["Part Name / Title", find_pair("benennung", "title")],
+        ["Document / Material No.", find_pair("dokumenten", "document", "material-nr", "material no")],
+        ["Material", find_pair("werkstoff", "material (")],
+        ["Scale", find_pair("maßstab", "scale")],
+        ["Finish", find_pair("oberfl", "finish")],
+        ["Source File", Path(pdf_path).name],
+    ]
+    # Dense title blocks sometimes pack several labels onto one physical
+    # line (so several of the lookups above land on the exact same merged
+    # value) - collapse those duplicates into a single combined row rather
+    # than repeating the same jumbled text three times.
+    seen_values = {}
+    meta_rows = []
+    for label, value in meta_rows_raw:
+        if value and value in seen_values:
+            idx = seen_values[value]
+            meta_rows[idx][0] += f" / {label}"
+        else:
+            if value:
+                seen_values[value] = len(meta_rows)
+            meta_rows.append([label, value])
+
+    rows = []
+    char_no = 1
+    for c in clusters:
+        if len(c["text"]) > 120:
+            continue
+        if not is_callout(c["text"]):
+            continue
+        requirement, upper, lower = parse_requirement(c["text"])
+        zone = zone_for_position(c["x0"], c["top"], page_w, page_h)
+        rows.append([
+            char_no, zone, "", requirement, upper, lower,
+            "", "", "", "", "", c["text"],
+        ])
+        char_no += 1
+
+    return meta_rows, rows
+
+
+def write_fai_csv(path, meta_rows, table_rows):
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["FAI-STYLE CHARACTERISTIC CHECKLIST"])
+        for label, value in meta_rows:
+            writer.writerow([label, value])
+        writer.writerow([])
+        writer.writerow(FAI_HEADER)
+        for row in table_rows:
+            writer.writerow(row)
+
+
+
+
 def is_callout(text):
     # a cluster counts as a callout if ANY token within it matches a pattern
     for token in text.split():
@@ -257,9 +384,12 @@ def write_csv(path, rows, fieldnames):
 
 
 def process_pdf(pdf_path, outdir, log=print):
-    """Run the full extraction on one PDF and write the 3 CSVs.
+    """Run the full extraction on one PDF and write a single FAI-style
+    checklist CSV: a small metadata block, then one row per dimension/
+    tolerance callout, laid out like a First Article Inspection
+    Characteristic Accountability form.
     `log` is a callable used for progress messages (print, or a GUI callback).
-    Returns a dict with the output paths and row counts."""
+    Returns a dict with the output path and row count."""
     pdf_path = Path(pdf_path)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -269,41 +399,17 @@ def process_pdf(pdf_path, outdir, log=print):
     words = load_words(pdf_path)
     log(f"  {len(words)} words found across the document.")
 
-    # 1) Title block
     tb_rows = extract_titleblock(words)
-    tb_path = outdir / f"{base}_titleblock.csv"
-    write_csv(tb_path, tb_rows, ["page", "row_type", "line_text"])
-    log(f"  Title block: {len(tb_rows)} lines -> {tb_path.name}")
-
-    # 2) Callouts (dimensions/tolerances/etc.)
     clusters = cluster_words(words)
-    callout_rows = []
-    for c in clusters:
-        if len(c["text"]) > 120:
-            continue  # oversized cluster = merged title-block text, not a real callout
-        if is_callout(c["text"]):
-            callout_rows.append({
-                "page": c["page"],
-                "callout_text": c["text"],
-                "x": round(c["x0"], 1),
-                "y": round(c["top"], 1),
-            })
-    callout_path = outdir / f"{base}_callouts.csv"
-    write_csv(callout_path, callout_rows, ["page", "callout_text", "x", "y"])
-    log(f"  Callouts: {len(callout_rows)} groups -> {callout_path.name}")
 
-    # 3) Full text dump (fallback overview, good for text-heavy PDFs too)
-    full_rows = extract_full_text_rows(pdf_path)
-    full_path = outdir / f"{base}_full_text.csv"
-    write_csv(full_path, full_rows, ["page", "text"])
-    log(f"  Full text: {len(full_rows)} lines -> {full_path.name}")
+    meta_rows, table_rows = build_fai_checklist(pdf_path, words, clusters, tb_rows)
+
+    out_path = outdir / f"{base}_checklist.csv"
+    write_fai_csv(out_path, meta_rows, table_rows)
+    log(f"  Checklist: {len(table_rows)} characteristics -> {out_path.name}")
 
     log("Done.")
-    return {
-        "titleblock": tb_path, "titleblock_rows": len(tb_rows),
-        "callouts": callout_path, "callouts_rows": len(callout_rows),
-        "full_text": full_path, "full_text_rows": len(full_rows),
-    }
+    return {"checklist": out_path, "checklist_rows": len(table_rows)}
 
 
 def main_cli():

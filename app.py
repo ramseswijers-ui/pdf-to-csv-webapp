@@ -1,20 +1,13 @@
 #!/usr/bin/env python3
 """
-Web front end for pdf_to_csv.py - upload a technical PDF in the browser,
-get title-block / callout / full-text CSVs back.
-
-Run locally:
-    pip install -r requirements.txt
-    python3 app.py
-    -> open http://localhost:5000
-
-Deployment notes are in README.md.
+Web front end for pdf_to_csv.py - upload a technical PDF, get back one
+FAI-style checklist CSV: a metadata block plus one row per dimension/
+tolerance callout, ready to fill in Results during a physical check.
 """
 import csv
 import io
 import shutil
 import uuid
-import zipfile
 from pathlib import Path
 
 from flask import (
@@ -28,7 +21,7 @@ BASE_DIR = Path(__file__).parent
 JOBS_DIR = BASE_DIR / "jobs"
 JOBS_DIR.mkdir(exist_ok=True)
 MAX_UPLOAD_MB = 25
-PREVIEW_ROWS = 25
+PREVIEW_ROWS = 30
 
 app = Flask(__name__)
 app.secret_key = "pdf-to-csv-dev-secret"  # replace with a real secret if you deploy this publicly
@@ -43,17 +36,21 @@ def job_dir(job_id):
 
 
 def read_preview(csv_path, limit=PREVIEW_ROWS):
-    """Read up to `limit` rows of a CSV for an in-browser preview table."""
+    """Read the metadata block + up to `limit` characteristic rows for an
+    in-browser preview table."""
     with open(csv_path, newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        header = next(reader, [])
-        rows = []
-        total = 0
-        for row in reader:
-            total += 1
-            if len(rows) < limit:
-                rows.append(row)
-        return header, rows, total
+        reader = list(csv.reader(f))
+
+    # find the header row (the FAI_HEADER line) to split metadata from table
+    header_idx = next((i for i, row in enumerate(reader) if row and row[0] == "Char No."), None)
+    if header_idx is None:
+        return {"meta": [], "header": [], "rows": [], "total": 0}
+
+    meta = [row for row in reader[1:header_idx] if row]
+    header = reader[header_idx]
+    data_rows = reader[header_idx + 1:]
+    total = len(data_rows)
+    return {"meta": meta, "header": header, "rows": data_rows[:limit], "total": total}
 
 
 @app.route("/")
@@ -85,7 +82,6 @@ def convert():
         flash(f"Couldn't process that PDF: {e}")
         return redirect(url_for("index"))
 
-    # keep the original name around for nicer download filenames
     (work_dir / "original_name.txt").write_text(uploaded.filename)
 
     return redirect(url_for("results", job_id=job_id))
@@ -97,65 +93,28 @@ def results(job_id):
     original_name = (d / "original_name.txt").read_text().strip() if (d / "original_name.txt").exists() else "document.pdf"
     base = Path(original_name).stem
 
-    files = {
-        "titleblock": d / "input_titleblock.csv",
-        "callouts": d / "input_callouts.csv",
-        "full_text": d / "input_full_text.csv",
-    }
-
-    previews = {}
-    for key, path in files.items():
-        if path.exists():
-            header, rows, total = read_preview(path)
-            previews[key] = {"header": header, "rows": rows, "total": total}
-        else:
-            previews[key] = {"header": [], "rows": [], "total": 0}
+    csv_path = d / "input_checklist.csv"
+    preview = read_preview(csv_path) if csv_path.exists() else {"meta": [], "header": [], "rows": [], "total": 0}
 
     return render_template(
         "results.html",
         job_id=job_id,
         base=base,
-        previews=previews,
+        preview=preview,
         preview_rows=PREVIEW_ROWS,
     )
 
 
-@app.route("/download/<job_id>/<which>")
-def download(job_id, which):
+@app.route("/download/<job_id>")
+def download(job_id):
     d = job_dir(job_id)
-    mapping = {
-        "titleblock": "input_titleblock.csv",
-        "callouts": "input_callouts.csv",
-        "full_text": "input_full_text.csv",
-    }
-    if which not in mapping:
-        abort(404)
-    path = d / mapping[which]
+    path = d / "input_checklist.csv"
     if not path.exists():
         abort(404)
 
     original_name = (d / "original_name.txt").read_text().strip() if (d / "original_name.txt").exists() else "document.pdf"
     base = Path(original_name).stem
-    download_name = f"{base}_{which}.csv"
-    return send_file(path, as_attachment=True, download_name=download_name, mimetype="text/csv")
-
-
-@app.route("/download-zip/<job_id>")
-def download_zip(job_id):
-    d = job_dir(job_id)
-    original_name = (d / "original_name.txt").read_text().strip() if (d / "original_name.txt").exists() else "document.pdf"
-    base = Path(original_name).stem
-
-    mem = io.BytesIO()
-    with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as zf:
-        for key, fname in [("titleblock", "input_titleblock.csv"),
-                            ("callouts", "input_callouts.csv"),
-                            ("full_text", "input_full_text.csv")]:
-            path = d / fname
-            if path.exists():
-                zf.write(path, arcname=f"{base}_{key}.csv")
-    mem.seek(0)
-    return send_file(mem, as_attachment=True, download_name=f"{base}_csv_export.zip", mimetype="application/zip")
+    return send_file(path, as_attachment=True, download_name=f"{base}_checklist.csv", mimetype="text/csv")
 
 
 @app.errorhandler(413)
