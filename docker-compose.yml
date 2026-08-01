@@ -7,3 +7,9 @@ services:
     restart: unless-stopped
     volumes:
       - ./jobs:/app/jobs
+    networks:
+      - arr_network
+
+networks:
+  arr_network:
+    external: true
