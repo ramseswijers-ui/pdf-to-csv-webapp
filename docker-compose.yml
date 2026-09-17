@@ -3,13 +3,7 @@ services:
     build: .
     container_name: pdf-to-csv-webapp
     ports:
-      - "8090:8000"
+      - "8099:8000"
     restart: unless-stopped
     volumes:
       - ./jobs:/app/jobs
-    networks:
-      - arr_network
-
-networks:
-  arr_network:
-    external: true

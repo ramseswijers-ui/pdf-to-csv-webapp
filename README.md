@@ -108,6 +108,34 @@ through `gunicorn` (included in requirements.txt) as shown above.
   drawings unless the server itself is private/trusted, or you add
   encryption/access control.
 
+## Output format
+
+One CSV per upload, laid out like Form 3 (First Article Inspection -
+Characteristic Accountability): a part-identification block, then one
+row per dimension/tolerance found on the drawing, with blank
+Results/Designed Tooling/Non-Conf. Number/Deviation/Error columns ready
+to fill in during a physical check. The last column keeps the original
+extracted text for every row, so you can always see exactly what the
+tool read off the page.
+
+## OCR fallback (for drawings with no text layer)
+
+Some CAD exports flatten all drawing text into vector outlines instead
+of real text characters - pdfplumber then finds zero words, since
+there's nothing to read as text. When that happens, the tool
+automatically falls back to OCR (rasterizing the page and running
+Tesseract) instead of producing an empty result.
+
+This works, but is noticeably less reliable than reading a real text
+layer: line-art and hatching sometimes get misread as stray characters,
+and multi-part dimensions (like `14 ±0,2`) can end up split across two
+rows. Every extracted row still keeps its raw OCR text in the last
+column, so nothing is silently dropped - just budget more time for
+manual review on these PDFs specifically. If you have any control over
+how a drawing is exported, exporting with an embedded text layer (rather
+than "flatten text to outlines" or similar) will give much cleaner
+results here.
+
 ## Files
 
 - `app.py` — Flask routes (upload, process, preview, download, zip).

@@ -81,13 +81,19 @@ KNOWN_LABELS = [
     "winkelgrößenmaße", "angle size dimension",
     "passung", "toleranz",
     "doc.-art", "doc.-type", "doc.-teil", "doc.-part", "version", "status",
+    # English / ASML-style title blocks
+    "part number", "material number", "description", "checked by",
+    "name", "former", "sheet", "sheets", "size", "scale",
+    "tolerances on linear dimensions", "tolerances on angles",
+    "surface roughness", "first angle projection", "status date",
+    "drawing not to scale", "do not scale drawing",
 ]
 
 # Regex fragments that flag a text token as a "dimension / callout" worth
 # pulling into the checklist CSV (numbers, tolerances, threads, GD&T, etc.)
 CALLOUT_PATTERNS = [
     r"^\d+([.,]\d+)?$",          # plain numbers: 45,21  110  0,2
-    r"^[+\-±]\d+([.,]\d+)?$",    # signed values: +0,2  -0,3  ±0,1
+    r"^[+\-±£#]\d+([.,]\d+)?$",  # signed/tolerance values (£ and # are common OCR misreads of ±)
     r"^\d+x$",                   # multiplicity: 3x 4x 6x
     r"^[MR]\d+([.,]\d+)?",       # thread/radius callouts: M4, R3,75
     r"^[A-Z]\d+$",               # fit classes: H8, H7, E8
@@ -103,12 +109,60 @@ CALLOUT_RE = re.compile("|".join(CALLOUT_PATTERNS), re.IGNORECASE)
 CLUSTER_GAP_X = 10
 CLUSTER_GAP_Y = 12
 
+# Below this many extracted text-layer words, treat the PDF as having no
+# usable text layer (common when a CAD export flattens text to vector
+# outlines) and fall back to OCR instead.
+OCR_FALLBACK_THRESHOLD = 5
+OCR_DPI = 450
+OCR_CONFIG = "--psm 6"
+
+
+def ocr_words_for_pdf(pdf_path, dpi=OCR_DPI):
+    """Rasterize each page and run OCR, returning words in the same shape
+    as load_words() (page, text, x0, x1, top, bottom, upright). Used only
+    when the PDF has no real text layer to read directly."""
+    import subprocess
+    import tempfile
+    import pytesseract
+    from PIL import Image
+
+    all_words = []
+    scale = 72.0 / dpi  # convert OCR pixel coordinates back to PDF points
+
+    with tempfile.TemporaryDirectory() as tmp:
+        prefix = f"{tmp}/page"
+        subprocess.run(
+            ["pdftoppm", "-png", "-r", str(dpi), str(pdf_path), prefix],
+            check=True, capture_output=True,
+        )
+        page_files = sorted(Path(tmp).glob("page*.png"))
+        for page_num, img_path in enumerate(page_files, start=1):
+            img = Image.open(img_path)
+            data = pytesseract.image_to_data(img, config=OCR_CONFIG, output_type=pytesseract.Output.DICT)
+            n = len(data["text"])
+            for i in range(n):
+                text = data["text"][i].strip()
+                if not text:
+                    continue
+                x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
+                all_words.append({
+                    "page": page_num,
+                    "text": text,
+                    "x0": x * scale, "x1": (x + w) * scale,
+                    "top": y * scale, "bottom": (y + h) * scale,
+                    "upright": True,  # OCR doesn't tell us orientation - assume horizontal
+                    "source": "ocr",
+                })
+    return all_words
+
 
 def load_words(pdf_path):
     """Return list of dicts: page, text, x0, x1, top, bottom, upright for
     every word. Technical drawings often mix horizontal (title block) and
     rotated/vertical text (dimension callouts along vertical lines) - we
-    keep the 'upright' flag so callers can avoid merging across the two."""
+    keep the 'upright' flag so callers can avoid merging across the two.
+    If the PDF has no real text layer (text flattened to vector outlines,
+    or a scan), falls back to OCR automatically."""
     all_words = []
     with pdfplumber.open(pdf_path) as pdf:
         for page_num, page in enumerate(pdf.pages, start=1):
@@ -120,6 +174,11 @@ def load_words(pdf_path):
                     "top": w["top"], "bottom": w["bottom"],
                     "upright": w.get("upright", True),
                 })
+
+    if len(all_words) < OCR_FALLBACK_THRESHOLD:
+        ocr_words = ocr_words_for_pdf(pdf_path)
+        if len(ocr_words) > len(all_words):
+            return ocr_words
     return all_words
 
 
@@ -128,6 +187,13 @@ def cluster_words(words):
     on expanded bounding-box overlap."""
     n = len(words)
     parent = list(range(n))
+
+    # OCR-derived words come from noisier bounding boxes (line-art/hatching
+    # often gets misread as stray characters) - use a tighter merge distance
+    # for them so garbage doesn't get pulled into real dimension clusters.
+    is_ocr = any(w.get("source") == "ocr" for w in words)
+    gap_x = 5 if is_ocr else CLUSTER_GAP_X
+    gap_y = 5 if is_ocr else CLUSTER_GAP_Y
 
     def find(i):
         while parent[i] != i:
@@ -157,10 +223,10 @@ def cluster_words(words):
                 if wi.get("upright", True) != wj.get("upright", True):
                     continue  # never merge horizontal and rotated text
                 # expanded bbox overlap test
-                if (wi["x0"] - CLUSTER_GAP_X <= wj["x1"] and
-                        wj["x0"] - CLUSTER_GAP_X <= wi["x1"] and
-                        wi["top"] - CLUSTER_GAP_Y <= wj["bottom"] and
-                        wj["top"] - CLUSTER_GAP_Y <= wi["bottom"]):
+                if (wi["x0"] - gap_x <= wj["x1"] and
+                        wj["x0"] - gap_x <= wi["x1"] and
+                        wi["top"] - gap_y <= wj["bottom"] and
+                        wj["top"] - gap_y <= wi["bottom"]):
                     union(i, j)
 
     groups = {}
@@ -236,7 +302,7 @@ def parse_requirement(text):
     still useful as a checklist line, just without split-out tolerances."""
     t = text.strip()
 
-    m = re.search(r'±\s*(\d+[.,]\d+|\d+)', t)
+    m = re.search(r'[±£#]\s*(\d+[.,]\d+|\d+)', t)
     if m:
         v = m.group(1)
         return t, f"+{v}", f"-{v}"
@@ -271,18 +337,20 @@ def zone_for_position(x, top, page_width, page_height):
 
 
 FAI_HEADER = [
-    "Char No.", "Reference Location", "Operation", "Requirement",
-    "Upper Tol", "Lower Tol", "Results", "Designed Tooling",
-    "Non-Conf. Number", "Deviation", "Error", "Notes / Source Text",
+    "5. Char No.:", "6. Reference Location:", "7. Operation:",
+    "8. Requirement:", "Upper Tol", "Lower Tol",
+    "9. Results:", "10. Designed Tooling:", "11. Non-Conf. Number:",
+    "14. Deviation", "15. Error", "16. (Insert columns as required by the Customer)",
 ]
 
 
 def build_fai_checklist(pdf_path, words, clusters, tb_rows):
-    """Build one FAI-style inspection checklist: a metadata block (part
-    name, doc number, etc. - pulled from the title block) followed by one
-    row per dimension/tolerance callout, in the same column layout as a
-    standard First Article Inspection 'Characteristic Accountability'
-    form - ready to fill in Results during a physical check."""
+    """Build one checklist CSV laid out exactly like Form 3: Characteristic
+    Accountability, Verification and Compatibility Evaluation (the standard
+    First Article Inspection form) - a part-identification block using the
+    form's own field numbers/wording, then one row per dimension/tolerance
+    callout under the same numbered column headers, ready to fill in
+    Results during a physical check."""
     with pdfplumber.open(pdf_path) as pdf:
         page = pdf.pages[0]
         page_w, page_h = page.width, page.height
@@ -300,33 +368,24 @@ def build_fai_checklist(pdf_path, words, clusters, tb_rows):
                 return value
         return ""
 
-    meta_rows_raw = [
-        ["Part Name / Title", find_pair("benennung", "title")],
-        ["Document / Material No.", find_pair("dokumenten", "document", "material-nr", "material no")],
-        ["Material", find_pair("werkstoff", "material (")],
-        ["Scale", find_pair("maßstab", "scale")],
-        ["Finish", find_pair("oberfl", "finish")],
-        ["Source File", Path(pdf_path).name],
+    part_number = find_pair("part number", "dokumenten", "document", "material-nr", "material no")
+    part_name = find_pair("benennung", "title", "description")
+    material = find_pair("werkstoff", "material (", "material number")
+
+    meta_rows = [
+        ["1. Part Number:", part_number],
+        ["Rev. Level:", ""],
+        ["2. Part Name:", part_name],
+        ["3. Serial Number:", ""],
+        ["4. FAI Report:", ""],
+        ["Material:", material],
+        ["Source File:", Path(pdf_path).name],
     ]
-    # Dense title blocks sometimes pack several labels onto one physical
-    # line (so several of the lookups above land on the exact same merged
-    # value) - collapse those duplicates into a single combined row rather
-    # than repeating the same jumbled text three times.
-    seen_values = {}
-    meta_rows = []
-    for label, value in meta_rows_raw:
-        if value and value in seen_values:
-            idx = seen_values[value]
-            meta_rows[idx][0] += f" / {label}"
-        else:
-            if value:
-                seen_values[value] = len(meta_rows)
-            meta_rows.append([label, value])
 
     rows = []
     char_no = 1
     for c in clusters:
-        if len(c["text"]) > 120:
+        if len(c["text"]) > 60:
             continue
         if not is_callout(c["text"]):
             continue
@@ -344,13 +403,19 @@ def build_fai_checklist(pdf_path, words, clusters, tb_rows):
 def write_fai_csv(path, meta_rows, table_rows):
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["FAI-STYLE CHARACTERISTIC CHECKLIST"])
+        writer.writerow(["Form 3: Characteristic Accountability, Verification and Compatibility Evaluation"])
+        writer.writerow([])
         for label, value in meta_rows:
             writer.writerow([label, value])
         writer.writerow([])
+        writer.writerow(["Characteristic Accountability", "", "", "", "", "", "Inspection / Test Results"])
         writer.writerow(FAI_HEADER)
         for row in table_rows:
             writer.writerow(row)
+        writer.writerow([])
+        writer.writerow(["Signature indicates that all characteristics are accounted for and meet drawing requirements or are properly documented for disposition."])
+        writer.writerow(["12. Prepared By:", "", "13. Date:", ""])
+        writer.writerow(["Supporting Data Provided:", ""])
 
 
 

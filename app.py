@@ -42,13 +42,17 @@ def read_preview(csv_path, limit=PREVIEW_ROWS):
         reader = list(csv.reader(f))
 
     # find the header row (the FAI_HEADER line) to split metadata from table
-    header_idx = next((i for i, row in enumerate(reader) if row and row[0] == "Char No."), None)
+    header_idx = next((i for i, row in enumerate(reader) if row and row[0] == "5. Char No.:"), None)
     if header_idx is None:
         return {"meta": [], "header": [], "rows": [], "total": 0}
 
     meta = [row for row in reader[1:header_idx] if row]
     header = reader[header_idx]
-    data_rows = reader[header_idx + 1:]
+    data_rows = []
+    for row in reader[header_idx + 1:]:
+        if not row or not any(cell.strip() for cell in row):
+            break
+        data_rows.append(row)
     total = len(data_rows)
     return {"meta": meta, "header": header, "rows": data_rows[:limit], "total": total}
 
