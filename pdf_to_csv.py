@@ -93,6 +93,8 @@ KNOWN_LABELS = [
 # pulling into the checklist CSV (numbers, tolerances, threads, GD&T, etc.)
 CALLOUT_PATTERNS = [
     r"^\d+([.,]\d+)?$",          # plain numbers: 45,21  110  0,2
+    r"\d[±£#]\d",               # value glued to its tolerance: 40±0,2
+    r"\(\d+\s?x\)",             # glued multiplicity: 31.5(2x)
     r"^[+\-±£#]\d+([.,]\d+)?$",  # signed/tolerance values (£ and # are common OCR misreads of ±)
     r"^\d+x$",                   # multiplicity: 3x 4x 6x
     r"^[MR]\d+([.,]\d+)?",       # thread/radius callouts: M4, R3,75
@@ -135,12 +137,21 @@ def _iou(a, b):
     return inter / union
 
 
+def _iomin(a, b):
+    """Overlap as a share of the SMALLER box: catches a box that is mostly
+    inside another one (the same text read twice by overlapping tiles)."""
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    smaller = min((a[2]-a[0])*(a[3]-a[1]), (b[2]-b[0])*(b[3]-b[1]))
+    return (ix * iy) / smaller if smaller > 0 else 1.0
+
+
 def ocr_words_rapid(pdf_path):
     """Offline OCR using RapidOCR (PaddleOCR models on ONNX, CPU only).
     Reads each page upright AND rotated +/-90 degrees so vertical
-    dimension text is picked up too. Set OCR_TILES=1 in the environment to
-    additionally read the page in overlapping tiles (slower, finds a few
-    more small items)."""
+    dimension text is picked up too. Also reads the page in overlapping
+    tiles (finds small text the full-page read misses; set OCR_TILES=0 in
+    the environment to skip this for speed)."""
     import os
     import subprocess
     import tempfile
@@ -149,7 +160,7 @@ def ocr_words_rapid(pdf_path):
     from rapidocr_onnxruntime import RapidOCR
 
     engine = RapidOCR()
-    use_tiles = os.environ.get("OCR_TILES") == "1"
+    use_tiles = os.environ.get("OCR_TILES") != "0"   # on by default; OCR_TILES=0 disables
     all_words = []
 
     with pdfplumber.open(pdf_path) as pdf:
@@ -192,7 +203,7 @@ def ocr_words_rapid(pdf_path):
                                 continue
                             b = to_box(pts)
                             b = (b[0]+x, b[1]+y, b[2]+x, b[3]+y)
-                            if all(_iou(b, f[0]) < 0.5 for f in found):
+                            if all(_iomin(b, f[0]) < 0.4 for f in found):
                                 found.append((b, txt, True))
 
             # pass 2/3: rotated 90 degrees either way (vertical text)
@@ -208,7 +219,7 @@ def ocr_words_rapid(pdf_path):
                         else:
                             corners.append((ry, H - 1 - rx))
                     b = to_box(corners)
-                    if all(_iou(b, f[0]) < 0.3 for f in found):
+                    if all(_iomin(b, f[0]) < 0.4 for f in found):
                         found.append((b, txt, False))
 
             for (x0, y0, x1, y1), txt, upright in found:
@@ -589,23 +600,37 @@ def build_fai_checklist(pdf_path, words, clusters, tb_rows):
     ]
 
     grid = detect_zone_grid(words, page_w, page_h)
+    tb_region = title_block_region(words, page_w, page_h)
 
     rows = []
+    placements = []   # where to draw each numbered balloon on the PDF
+    skipped_title_block = 0
     char_no = 1
     for c in clusters:
         if len(c["text"]) > 60:
             continue
         if not is_callout(c["text"]):
             continue
+        cx, cy = (c["x0"] + c["x1"]) / 2, (c["top"] + c["bottom"]) / 2
+        # the zone markers printed in the sheet border (1..8, A..F) are not characteristics
+        if re.fullmatch(r"[1-9]", c["text"].strip()) and (cy < page_h * 0.07 or cy > page_h * 0.94):
+            continue
+        if re.fullmatch(r"[A-H]", c["text"].strip()) and (cx < page_w * 0.06 or cx > page_w * 0.96):
+            continue
+        if c["page"] == 1 and tb_region and cx >= tb_region[0] and cy >= tb_region[1]:
+            skipped_title_block += 1   # dates, sheet numbers, tolerance table...
+            continue
         requirement, upper, lower = parse_requirement(c["text"])
-        zone = zone_for_position((c["x0"] + c["x1"]) / 2, (c["top"] + c["bottom"]) / 2, page_w, page_h, grid)
+        zone = zone_for_position(cx, cy, page_w, page_h, grid)
         rows.append([
             char_no, zone, "", requirement, upper, lower,
             "", "", "", "", "", c["text"],
         ])
+        placements.append({"char_no": char_no, "page": c["page"], "x0": c["x0"],
+                           "x1": c["x1"], "top": c["top"], "bottom": c["bottom"]})
         char_no += 1
 
-    return meta_rows, rows
+    return meta_rows, rows, placements
 
 
 def write_fai_csv(path, meta_rows, table_rows):
@@ -660,6 +685,108 @@ def write_csv(path, rows, fieldnames):
             writer.writerow(r)
 
 
+TITLE_BLOCK_WORDS = (
+    "part number", "material number", "description", "tolerances", "scale",
+    "sheet", "status", "checked", "passung", "benennung", "werkstoff",
+    "maßstab", "gewicht", "dokumenten", "oberfl", "bearbeitet", "format",
+)
+
+
+def title_block_region(words, page_w, page_h):
+    """(x_min, y_min) of the title block: everything right of and below this
+    corner is title block, not a characteristic to inspect. Found from the
+    title-block label words in the lower-right of page 1; None if unsure."""
+    hits = [w for w in words
+            if w["page"] == 1
+            and w["x0"] > page_w * 0.4 and w["top"] > page_h * 0.55
+            and any(k in w["text"].lower() for k in TITLE_BLOCK_WORDS)]
+    if len(hits) < 3:
+        return None
+    return (min(w["x0"] for w in hits) - 10, min(w["top"] for w in hits) - 10)
+
+
+def place_balloons(placements, obstacles, page_w, page_h):
+    """Choose a spot for each balloon next to its callout, avoiding other
+    text and other balloons. Returns {char_no: (cx, cy, r, leader_target)}."""
+    r = max(6.0, min(12.0, page_w / 140.0))
+    placed, result = [], {}
+
+    def hits(box, others):
+        return sum(1 for o in others
+                   if box[0] < o[2] and box[2] > o[0] and box[1] < o[3] and box[3] > o[1])
+
+    dirs = [(0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1)]
+    for p in placements:
+        own = (p["x0"], p["top"], p["x1"], p["bottom"])
+        hw, hh = (own[2] - own[0]) / 2, (own[3] - own[1]) / 2
+        mx, my = (own[0] + own[2]) / 2, (own[1] + own[3]) / 2
+        others = [o for o in obstacles if o != own]
+        best = None
+        for gap in (r * 0.4, r * 1.5, r * 3.0):
+            for dx, dy in dirs:
+                cx = mx + dx * (hw + r + gap) if dx else mx
+                cy = my + dy * (hh + r + gap) if dy else my
+                box = (cx - r, cy - r, cx + r, cy + r)
+                score = (hits(box, others) * 10 + hits(box, placed) * 12
+                         + (100 if box[0] < 0 or box[1] < 0 or box[2] > page_w or box[3] > page_h else 0)
+                         + gap * 0.05 + (0.3 if dx and dy else 0))
+                if best is None or score < best[0]:
+                    best = (score, cx, cy, box)
+        _, cx, cy, box = best
+        placed.append(box)
+        # leader line target: nearest point on the callout's box
+        tx = min(max(cx, own[0]), own[2])
+        ty = min(max(cy, own[1]), own[3])
+        result[p["char_no"]] = (cx, cy, r, (tx, ty))
+    return result
+
+
+def annotate_pdf(pdf_path, out_path, placements, clusters):
+    """Copy the original PDF and draw a red numbered balloon at every
+    characteristic, using the same numbers as the checklist."""
+    import io
+    from pypdf import PdfReader, PdfWriter
+    from reportlab.pdfgen import canvas
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    reader = PdfReader(str(pdf_path))
+    writer = PdfWriter()
+    for page_idx, page in enumerate(reader.pages, start=1):
+        mine = [p for p in placements if p["page"] == page_idx]
+        rot = page.get("/Rotate", 0) or 0
+        if mine and rot % 360 == 0:
+            mb = page.mediabox
+            pw, ph = float(mb.width), float(mb.height)
+            ox, oy = float(mb.left), float(mb.bottom)
+            obstacles = [(c["x0"], c["top"], c["x1"], c["bottom"])
+                         for c in clusters if c["page"] == page_idx]
+            spots = place_balloons(mine, obstacles, pw, ph)
+
+            buf = io.BytesIO()
+            cv = canvas.Canvas(buf, pagesize=(pw + ox, ph + oy))
+            red = (0.85, 0.08, 0.08)
+            for num, (cx, cy, r, (tx, ty)) in spots.items():
+                X, Y = ox + cx, oy + ph - cy
+                cv.setStrokeColorRGB(*red)
+                cv.setLineWidth(max(0.6, r / 10))
+                if (tx - cx) ** 2 + (ty - cy) ** 2 > (r * 1.2) ** 2:   # leader line
+                    cv.line(X, Y, ox + tx, oy + ph - ty)
+                cv.setFillColorRGB(1, 1, 1)
+                cv.circle(X, Y, r, stroke=1, fill=1)
+                label = str(num)
+                size = r * (1.15 if len(label) <= 2 else 0.9)
+                cv.setFillColorRGB(*red)
+                cv.setFont("Helvetica-Bold", size)
+                cv.drawString(X - stringWidth(label, "Helvetica-Bold", size) / 2,
+                              Y - size * 0.35, label)
+            cv.save()
+            buf.seek(0)
+            page.merge_page(PdfReader(buf).pages[0])
+        writer.add_page(page)
+    with open(out_path, "wb") as f:
+        writer.write(f)
+
+
 def process_pdf(pdf_path, outdir, log=print):
     """Run the full extraction on one PDF and write a single FAI-style
     checklist CSV: a small metadata block, then one row per dimension/
@@ -679,14 +806,19 @@ def process_pdf(pdf_path, outdir, log=print):
     tb_rows = extract_titleblock(words)
     clusters = cluster_words(words)
 
-    meta_rows, table_rows = build_fai_checklist(pdf_path, words, clusters, tb_rows)
+    meta_rows, table_rows, placements = build_fai_checklist(pdf_path, words, clusters, tb_rows)
 
     out_path = outdir / f"{base}_checklist.csv"
     write_fai_csv(out_path, meta_rows, table_rows)
     log(f"  Checklist: {len(table_rows)} characteristics -> {out_path.name}")
 
+    balloon_path = outdir / f"{base}_ballooned.pdf"
+    annotate_pdf(pdf_path, balloon_path, placements, clusters)
+    log(f"  Balloons: {len(placements)} numbered -> {balloon_path.name}")
+
     log("Done.")
-    return {"checklist": out_path, "checklist_rows": len(table_rows)}
+    return {"checklist": out_path, "checklist_rows": len(table_rows),
+            "ballooned": balloon_path}
 
 
 def main_cli():

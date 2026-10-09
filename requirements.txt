@@ -2,5 +2,7 @@ Flask==3.0.3
 pdfplumber==0.11.4
 gunicorn==22.0.0
 rapidocr-onnxruntime==1.4.4
+reportlab
+pypdf
 Pillow
 numpy<2

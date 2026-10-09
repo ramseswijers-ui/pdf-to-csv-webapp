@@ -20,7 +20,18 @@
 
       <div class="actions" style="margin-bottom: 28px;">
         <a class="btn" href="{{ url_for('download', job_id=job_id) }}">Download CSV</a>
+        <a class="btn" href="{{ url_for('download_pdf', job_id=job_id) }}">Download PDF with balloons</a>
         <a class="btn secondary" href="{{ url_for('index') }}">Convert another PDF</a>
+      </div>
+
+      <div class="panel" style="margin-bottom: 18px;">
+        <div class="panel-head">
+          <h2>Drawing with numbered balloons</h2>
+          <a class="dl" href="{{ url_for('download_pdf', job_id=job_id) }}">Download PDF</a>
+        </div>
+        <img src="{{ url_for('preview', job_id=job_id) }}" alt="Drawing with numbered balloons"
+             style="width:100%; display:block; background:#fff;">
+        <div class="more-note">Balloon numbers match "5. Char No." in the CSV.</div>
       </div>
 
       {% if preview.meta %}

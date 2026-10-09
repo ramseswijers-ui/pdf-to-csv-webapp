@@ -7,6 +7,7 @@ tolerance callout, ready to fill in Results during a physical check.
 import csv
 import io
 import shutil
+import subprocess
 import threading
 import uuid
 from pathlib import Path
@@ -131,6 +132,32 @@ def download(job_id):
     original_name = (d / "original_name.txt").read_text().strip() if (d / "original_name.txt").exists() else "document.pdf"
     base = Path(original_name).stem
     return send_file(path, as_attachment=True, download_name=f"{base}_checklist.csv", mimetype="text/csv")
+
+
+@app.route("/download-pdf/<job_id>")
+def download_pdf(job_id):
+    d = job_dir(job_id)
+    path = d / "input_ballooned.pdf"
+    if not path.exists():
+        abort(404)
+    original_name = (d / "original_name.txt").read_text().strip() if (d / "original_name.txt").exists() else "document.pdf"
+    return send_file(path, as_attachment=True,
+                     download_name=f"{Path(original_name).stem}_ballooned.pdf",
+                     mimetype="application/pdf")
+
+
+@app.route("/preview/<job_id>.png")
+def preview(job_id):
+    """First page of the ballooned PDF as an image, rendered on first request."""
+    d = job_dir(job_id)
+    pdf = d / "input_ballooned.pdf"
+    png = d / "preview.png"
+    if not pdf.exists():
+        abort(404)
+    if not png.exists():
+        subprocess.run(["pdftoppm", "-png", "-r", "110", "-singlefile",
+                        str(pdf), str(d / "preview")], check=True, capture_output=True)
+    return send_file(png, mimetype="image/png")
 
 
 @app.errorhandler(413)
