@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="3">
+  <title>Processing…</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="sheet">
+    <div class="frame">
+      <span class="tick-bl"></span><span class="tick-br"></span>
+      <p class="eyebrow">Doc.-Type: PROCESSING · {{ base }}</p>
+      <h1>Reading the drawing…</h1>
+      <p class="sub">Drawings without a text layer are read with OCR, which can take a minute or two. This page refreshes by itself and shows the checklist as soon as it is ready.</p>
+    </div>
+  </div>
+</body>
+</html>

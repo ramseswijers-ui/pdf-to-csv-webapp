@@ -7,6 +7,7 @@ tolerance callout, ready to fill in Results during a physical check.
 import csv
 import io
 import shutil
+import threading
 import uuid
 from pathlib import Path
 
@@ -79,14 +80,17 @@ def convert():
     pdf_path = work_dir / "input.pdf"
     uploaded.save(pdf_path)
 
-    try:
-        result = core.process_pdf(pdf_path, work_dir, log=lambda *_: None)
-    except Exception as e:
-        shutil.rmtree(work_dir, ignore_errors=True)
-        flash(f"Couldn't process that PDF: {e}")
-        return redirect(url_for("index"))
-
     (work_dir / "original_name.txt").write_text(uploaded.filename)
+
+    # Run the extraction in the background: OCR on a NAS CPU can take
+    # longer than Cloudflare / the reverse proxy will wait for one request.
+    def work():
+        try:
+            core.process_pdf(pdf_path, work_dir, log=lambda *_: None)
+        except Exception as e:  # shown to the user on the results page
+            (work_dir / "error.txt").write_text(str(e))
+
+    threading.Thread(target=work, daemon=True).start()
 
     return redirect(url_for("results", job_id=job_id))
 
@@ -97,7 +101,15 @@ def results(job_id):
     original_name = (d / "original_name.txt").read_text().strip() if (d / "original_name.txt").exists() else "document.pdf"
     base = Path(original_name).stem
 
+    if (d / "error.txt").exists():
+        flash(f"Couldn't process that PDF: {(d / 'error.txt').read_text()}")
+        shutil.rmtree(d, ignore_errors=True)
+        return redirect(url_for("index"))
+
     csv_path = d / "input_checklist.csv"
+    if not csv_path.exists():
+        return render_template("processing.html", base=base)
+
     preview = read_preview(csv_path) if csv_path.exists() else {"meta": [], "header": [], "rows": [], "total": 0}
 
     return render_template(

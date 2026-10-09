@@ -117,43 +117,148 @@ OCR_DPI = 450
 OCR_CONFIG = "--psm 6"
 
 
-def ocr_words_for_pdf(pdf_path, dpi=OCR_DPI):
-    """Rasterize each page and run OCR, returning words in the same shape
-    as load_words() (page, text, x0, x1, top, bottom, upright). Used only
-    when the PDF has no real text layer to read directly."""
+def _norm_ocr_text(t):
+    # OCR engines often return a different glyph for the diameter symbol
+    for bad in ("Φ", "φ", "⌀", "∅"):
+        t = t.replace(bad, "Ø")
+    t = re.sub(r"[\u2e80-\u9fff\uff00-\uffef]", " ", t)  # CJK lookalikes of GD&T symbols
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _iou(a, b):
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    if inter == 0:
+        return 0.0
+    union = (a[2]-a[0])*(a[3]-a[1]) + (b[2]-b[0])*(b[3]-b[1]) - inter
+    return inter / union
+
+
+def ocr_words_rapid(pdf_path):
+    """Offline OCR using RapidOCR (PaddleOCR models on ONNX, CPU only).
+    Reads each page upright AND rotated +/-90 degrees so vertical
+    dimension text is picked up too. Set OCR_TILES=1 in the environment to
+    additionally read the page in overlapping tiles (slower, finds a few
+    more small items)."""
+    import os
+    import subprocess
+    import tempfile
+    import numpy as np
+    from PIL import Image
+    from rapidocr_onnxruntime import RapidOCR
+
+    engine = RapidOCR()
+    use_tiles = os.environ.get("OCR_TILES") == "1"
+    all_words = []
+
+    with pdfplumber.open(pdf_path) as pdf:
+        sizes = [(p.width, p.height) for p in pdf.pages]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for page_num, (pw, ph) in enumerate(sizes, start=1):
+            # keep the longest side near 4000px so big sheets don't take forever
+            dpi = int(min(300, 4000 / (max(pw, ph) / 72.0)))
+            prefix = f"{tmp}/p{page_num}"
+            subprocess.run(
+                ["pdftoppm", "-png", "-r", str(dpi), "-f", str(page_num),
+                 "-l", str(page_num), "-singlefile", str(pdf_path), prefix],
+                check=True, capture_output=True)
+            img = Image.open(prefix + ".png").convert("RGB")
+            W, H = img.size
+            scale = 72.0 / dpi
+
+            def run(im):
+                res, _ = engine(np.array(im))
+                return res or []
+
+            def to_box(pts):
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                return (min(xs), min(ys), max(xs), max(ys))
+
+            found = []  # (box_px_in_original_space, text, upright)
+
+            # pass 1: upright (optionally tiled)
+            for pts, txt, conf in run(img):
+                if float(conf) >= 0.5:
+                    found.append((to_box(pts), txt, True))
+            if use_tiles:
+                tile, ov = 1400, 200
+                for y in range(0, H, tile - ov):
+                    for x in range(0, W, tile - ov):
+                        for pts, txt, conf in run(img.crop((x, y, min(x+tile, W), min(y+tile, H)))):
+                            if float(conf) < 0.5:
+                                continue
+                            b = to_box(pts)
+                            b = (b[0]+x, b[1]+y, b[2]+x, b[3]+y)
+                            if all(_iou(b, f[0]) < 0.5 for f in found):
+                                found.append((b, txt, True))
+
+            # pass 2/3: rotated 90 degrees either way (vertical text)
+            # PIL ROTATE_90 is counter-clockwise: (x, y) -> (y, W-1-x)
+            for rot, back in ((Image.ROTATE_90, "ccw"), (Image.ROTATE_270, "cw")):
+                for pts, txt, conf in run(img.transpose(rot)):
+                    if float(conf) < 0.85:
+                        continue  # stricter: horizontal text read sideways is junk
+                    corners = []
+                    for (rx, ry) in pts:
+                        if back == "ccw":
+                            corners.append((W - 1 - ry, rx))
+                        else:
+                            corners.append((ry, H - 1 - rx))
+                    b = to_box(corners)
+                    if all(_iou(b, f[0]) < 0.3 for f in found):
+                        found.append((b, txt, False))
+
+            for (x0, y0, x1, y1), txt, upright in found:
+                txt = _norm_ocr_text(txt)
+                if not txt:
+                    continue
+                all_words.append({
+                    "page": page_num, "text": txt,
+                    "x0": x0 * scale, "x1": x1 * scale,
+                    "top": y0 * scale, "bottom": y1 * scale,
+                    "upright": upright, "source": "ocr",
+                })
+    return all_words
+
+
+def ocr_words_tesseract(pdf_path, dpi=OCR_DPI):
+    """Older/lighter fallback, used only if RapidOCR isn't installed."""
     import subprocess
     import tempfile
     import pytesseract
     from PIL import Image
 
     all_words = []
-    scale = 72.0 / dpi  # convert OCR pixel coordinates back to PDF points
-
+    scale = 72.0 / dpi
     with tempfile.TemporaryDirectory() as tmp:
         prefix = f"{tmp}/page"
-        subprocess.run(
-            ["pdftoppm", "-png", "-r", str(dpi), str(pdf_path), prefix],
-            check=True, capture_output=True,
-        )
-        page_files = sorted(Path(tmp).glob("page*.png"))
-        for page_num, img_path in enumerate(page_files, start=1):
-            img = Image.open(img_path)
-            data = pytesseract.image_to_data(img, config=OCR_CONFIG, output_type=pytesseract.Output.DICT)
-            n = len(data["text"])
-            for i in range(n):
-                text = data["text"][i].strip()
+        subprocess.run(["pdftoppm", "-png", "-r", str(dpi), str(pdf_path), prefix],
+                       check=True, capture_output=True)
+        for page_num, img_path in enumerate(sorted(Path(tmp).glob("page*.png")), start=1):
+            data = pytesseract.image_to_data(Image.open(img_path), config=OCR_CONFIG,
+                                             output_type=pytesseract.Output.DICT)
+            for i, text in enumerate(data["text"]):
+                text = text.strip()
                 if not text:
                     continue
                 x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
                 all_words.append({
-                    "page": page_num,
-                    "text": text,
-                    "x0": x * scale, "x1": (x + w) * scale,
-                    "top": y * scale, "bottom": (y + h) * scale,
-                    "upright": True,  # OCR doesn't tell us orientation - assume horizontal
-                    "source": "ocr",
+                    "page": page_num, "text": text,
+                    "x0": x*scale, "x1": (x+w)*scale, "top": y*scale, "bottom": (y+h)*scale,
+                    "upright": True, "source": "ocr",
                 })
     return all_words
+
+
+def ocr_words_for_pdf(pdf_path):
+    try:
+        import rapidocr_onnxruntime  # noqa: F401
+    except ImportError:
+        return ocr_words_tesseract(pdf_path)
+    return ocr_words_rapid(pdf_path)
 
 
 def load_words(pdf_path):
@@ -192,8 +297,8 @@ def cluster_words(words):
     # often gets misread as stray characters) - use a tighter merge distance
     # for them so garbage doesn't get pulled into real dimension clusters.
     is_ocr = any(w.get("source") == "ocr" for w in words)
-    gap_x = 5 if is_ocr else CLUSTER_GAP_X
-    gap_y = 5 if is_ocr else CLUSTER_GAP_Y
+    gap_x = 8 if is_ocr else CLUSTER_GAP_X
+    gap_y = 6 if is_ocr else CLUSTER_GAP_Y
 
     def find(i):
         while parent[i] != i:
@@ -317,6 +422,15 @@ def parse_requirement(text):
     if pos and neg:
         return t, pos, neg
 
+    # stacked tolerance read top-to-bottom, e.g. "10 +1 0" or "+1 10 0" or
+    # "+0,5 6 (2x) 0": one +upper token, one bare 0 / -lower token, a nominal
+    toks = [x for x in re.split(r"\s+", t) if x]
+    ups = [x for x in toks if re.fullmatch(r"\+\d+(?:[.,]\d+)?", x)]
+    lows = [x for x in toks if re.fullmatch(r"-?\d+(?:[.,]\d+)?", x) and re.fullmatch(r"-?0+(?:[.,]0+)?|-\d+(?:[.,]\d+)?", x)]
+    if len(ups) == 1 and len(lows) == 1:
+        low = lows[0]
+        return t, ups[0], (low if low.startswith("-") else "-" + low)
+
     return t, "", ""
 
 
@@ -328,7 +442,73 @@ ZONE_COLS = 6   # labeled COLS..1, left to right
 ZONE_ROWS = 4   # labeled A..(last letter), bottom to top
 
 
-def zone_for_position(x, top, page_width, page_height):
+def detect_zone_grid(words, page_w, page_h):
+    """Find the zone markers printed in the sheet border (digits along the
+    top/bottom edge, letters down the left/right edge) and fit
+    position -> label lines. Works for any direction/count (1..8
+    left-to-right, 6..1, A at top or bottom). Only markers that line up
+    in one border strip are used (so stray numbers elsewhere are ignored),
+    and as few as two are enough: OCR misses some, and the rest of the
+    grid is extrapolated from their spacing. Returns (col_fit, row_fit)
+    or None."""
+    digits, letters = [], []
+    for w in words:
+        t = w["text"].strip()
+        cx, cy = (w["x0"] + w["x1"]) / 2, (w["top"] + w["bottom"]) / 2
+        if re.fullmatch(r"[1-9]", t) and (cy < page_h * 0.07 or cy > page_h * 0.94):
+            digits.append((int(t), cx, cy))
+        elif re.fullmatch(r"[A-H]", t) and (cx < page_w * 0.06 or cx > page_w * 0.96):
+            letters.append((ord(t) - 64, cy, cx))
+
+    def best_strip(items):
+        """items = (label, along_axis_pos, cross_axis_pos); keep the strip
+        (same cross-axis position) containing the most distinct labels."""
+        strips = {}
+        for label, along, cross in items:
+            strips.setdefault(round(cross / 10), []).append((label, along))
+        if not strips:
+            return {}
+        key = max(strips, key=lambda k: (len({l for l, _ in strips[k]}), -k))
+        d = {}
+        for label, along in strips[key]:
+            d.setdefault(label, []).append(along)
+        return d
+
+    def fit(d, extent, cap):
+        if len(d) < 2:
+            return None
+        pts = [(sum(v) / len(v), k) for k, v in d.items()]   # (position, index)
+        n = len(pts)
+        mx = sum(p for p, _ in pts) / n
+        mk = sum(k for _, k in pts) / n
+        var = sum((p - mx) ** 2 for p, _ in pts)
+        if var == 0:
+            return None
+        slope = sum((p - mx) * (k - mk) for p, k in pts) / var
+        if slope == 0:
+            return None
+        # extrapolate to the inner edges of the drawing frame
+        k0 = mk + slope * (extent * 0.045 - mx)
+        k1 = mk + slope * (extent * 0.955 - mx)
+        hi = min(cap, max(max(d), round(max(k0, k1))))
+        return (mx, mk, slope, 1, hi)
+
+    cf = fit(best_strip([(l, x, y) for l, x, y in digits]), page_w, 9)
+    rf = fit(best_strip([(l, y, x) for l, y, x in letters]), page_h, 8)
+    return (cf, rf) if cf and rf else None
+
+
+def zone_from_fit(fit, pos):
+    mx, mk, slope, lo, hi = fit
+    k = round(mk + slope * (pos - mx))
+    return max(lo, min(hi, k))
+
+
+def zone_for_position(x, top, page_width, page_height, grid=None):
+    if grid:
+        c = zone_from_fit(grid[0], x)
+        r = zone_from_fit(grid[1], top)
+        return f"{c}-{chr(64 + r)}"
     col_idx = min(int(x / (page_width / ZONE_COLS)), ZONE_COLS - 1)
     col_label = str(ZONE_COLS - col_idx)
     row_idx = min(int(top / (page_height / ZONE_ROWS)), ZONE_ROWS - 1)
@@ -368,9 +548,35 @@ def build_fai_checklist(pdf_path, words, clusters, tb_rows):
                 return value
         return ""
 
-    part_number = find_pair("part number", "dokumenten", "document", "material-nr", "material no")
-    part_name = find_pair("benennung", "title", "description")
-    material = find_pair("werkstoff", "material (", "material number")
+    def value_below(*labels, wide=False):
+        """Text printed directly under a label like PART NUMBER. With
+        wide=True, join everything on that row to the right of the label."""
+        for w in words:
+            key = re.sub(r"\W", "", w["text"]).lower()
+            if not any(re.sub(r"\W", "", l).lower() == key for l in labels):
+                continue
+            best = None
+            for v in words:
+                dy = v["top"] - w["bottom"]
+                if v is w or dy < -2 or dy > 40:
+                    continue
+                if v["x1"] < w["x0"] - 5 or v["x0"] > w["x1"] + (400 if wide else 60):
+                    continue
+                if best is None or dy < best[0]:
+                    best = (dy, v["text"], v["top"])
+            if best and wide:
+                row = sorted((v for v in words if abs(v["top"] - best[2]) < 6
+                              and v["x1"] >= w["x0"] - 5 and v["x0"] <= w["x1"] + 400),
+                             key=lambda v: v["x0"])
+                text = " ".join(v["text"] for v in row)
+                return re.sub(r"^ASML\s+", "", text)
+            if best:
+                return best[1]
+        return ""
+
+    part_number = value_below("PART NUMBER", "Document-No.") or find_pair("part number", "dokumenten", "document", "material-nr", "material no")
+    part_name = value_below("DESCRIPTION", wide=True) or find_pair("benennung", "title", "description")
+    material = value_below("MATERIAL NUMBER") or find_pair("werkstoff", "material (", "material number")
 
     meta_rows = [
         ["1. Part Number:", part_number],
@@ -382,6 +588,8 @@ def build_fai_checklist(pdf_path, words, clusters, tb_rows):
         ["Source File:", Path(pdf_path).name],
     ]
 
+    grid = detect_zone_grid(words, page_w, page_h)
+
     rows = []
     char_no = 1
     for c in clusters:
@@ -390,7 +598,7 @@ def build_fai_checklist(pdf_path, words, clusters, tb_rows):
         if not is_callout(c["text"]):
             continue
         requirement, upper, lower = parse_requirement(c["text"])
-        zone = zone_for_position(c["x0"], c["top"], page_w, page_h)
+        zone = zone_for_position((c["x0"] + c["x1"]) / 2, (c["top"] + c["bottom"]) / 2, page_w, page_h, grid)
         rows.append([
             char_no, zone, "", requirement, upper, lower,
             "", "", "", "", "", c["text"],
@@ -401,6 +609,8 @@ def build_fai_checklist(pdf_path, words, clusters, tb_rows):
 
 
 def write_fai_csv(path, meta_rows, table_rows):
+    # write to a temp file first so a reader never sees a half-written CSV
+    final_path, path = path, str(path) + ".tmp"
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["Form 3: Characteristic Accountability, Verification and Compatibility Evaluation"])
@@ -416,6 +626,8 @@ def write_fai_csv(path, meta_rows, table_rows):
         writer.writerow(["Signature indicates that all characteristics are accounted for and meet drawing requirements or are properly documented for disposition."])
         writer.writerow(["12. Prepared By:", "", "13. Date:", ""])
         writer.writerow(["Supporting Data Provided:", ""])
+    import os
+    os.replace(path, final_path)
 
 
 

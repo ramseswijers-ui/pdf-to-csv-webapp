@@ -2,11 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# tesseract-ocr + poppler-utils (pdftoppm) power the OCR fallback used for
-# PDFs that have no real text layer (e.g. CAD exports that flatten text to
-# vector outlines)
+# poppler-utils (pdftoppm) renders pages for OCR; libgl1 + libglib2.0-0 are
+# needed by OpenCV, which the offline OCR engine (RapidOCR) depends on
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tesseract-ocr poppler-utils \
+    poppler-utils libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -19,4 +18,4 @@ RUN mkdir -p /app/jobs
 
 EXPOSE 8000
 
-CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:8000", "--timeout", "120", "app:app"]
+CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:8000", "--timeout", "300", "app:app"]
