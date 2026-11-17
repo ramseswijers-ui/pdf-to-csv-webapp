@@ -1597,8 +1597,8 @@ def annotate_pdf(pdf_path, out_path, placements, clusters):
     from reportlab.pdfbase.pdfmetrics import stringWidth
 
     reader = PdfReader(str(pdf_path))
-    writer = PdfWriter()
-    for page_idx, page in enumerate(reader.pages, start=1):
+    writer = PdfWriter(clone_from=reader)      # pages must belong to the writer before they are changed
+    for page_idx, page in enumerate(writer.pages, start=1):
         mine = [p for p in placements if p["page"] == page_idx]
         rot = page.get("/Rotate", 0) or 0
         if mine and rot % 360 == 0:
@@ -1629,7 +1629,6 @@ def annotate_pdf(pdf_path, out_path, placements, clusters):
             cv.save()
             buf.seek(0)
             page.merge_page(PdfReader(buf).pages[0])
-        writer.add_page(page)
     with open(out_path, "wb") as f:
         writer.write(f)
 
