@@ -118,23 +118,60 @@ to fill in during a physical check. The last column keeps the original
 extracted text for every row, so you can always see exactly what the
 tool read off the page.
 
+## Notation in the checklist
+
+- **Requirement** holds symbol + value + multiplicity, without tolerance text,
+  e.g. `ø3,3 (4x)`; the tolerances are in **Upper Tol** (always with `+`) and
+  **Lower Tol** (`-x`, or `0`).
+- Tolerance frames get their symbol and a value: `POS ø0,2 A` with upper `+0,2`
+  and lower `0` (recognised: POS, ◎, ○, ▱, ⌓; others are marked "symbol not
+  recognised" in the last column). Frames drawn vertically are recognised
+  too, and a `(4x)` next to a frame is added to it.
+- Boxed dimensions get `(TED)`, also when the box is drawn at an angle.
+- A stacked tolerance whose lower value OCR did not read (`+0,3` over `0`) is
+  filled in as `0` and marked "lower tol assumed 0 - check" in the last column.
+- `ø` is restored where OCR reads it as `Q`; decimals use a comma.
+- General info (part number, description, material, surface/heat/after
+  treatment, surface roughness, notes such as `A = ... m²`) is listed at
+  the top and not numbered. Title block and border grid markers are not numbered.
+- The Excel file stores everything as left-aligned text; a CSV opened in
+  Excel right-aligns numbers.
+
+## Balloons on the original drawing
+
+Besides the CSV, you get a copy of the original PDF with a red numbered
+balloon next to every characteristic. The number is the same as
+"5. Char No." in the CSV, so you can find any row on the drawing and
+vice versa. Balloons try to avoid covering other text; where a balloon
+is some distance from its value, a thin leader line points to it.
+Title-block items (dates, sheet numbers, tolerance tables), revision-table
+rows and the border zone markers (1-2 digit numbers and letters) are not numbered.
+
 ## OCR fallback (for drawings with no text layer)
 
 Some CAD exports flatten all drawing text into vector outlines instead
-of real text characters - pdfplumber then finds zero words, since
-there's nothing to read as text. When that happens, the tool
-automatically falls back to OCR (rasterizing the page and running
-Tesseract) instead of producing an empty result.
+of real text characters, so there is nothing to read directly. When that
+happens the tool automatically switches to OCR, fully offline, using
+RapidOCR (PaddleOCR models running on the CPU - no API key, no credits).
 
-This works, but is noticeably less reliable than reading a real text
-layer: line-art and hatching sometimes get misread as stray characters,
-and multi-part dimensions (like `14 ±0,2`) can end up split across two
-rows. Every extracted row still keeps its raw OCR text in the last
-column, so nothing is silently dropped - just budget more time for
-manual review on these PDFs specifically. If you have any control over
-how a drawing is exported, exporting with an embedded text layer (rather
-than "flatten text to outlines" or similar) will give much cleaner
-results here.
+- The page is read upright, rotated +/-90 degrees (vertical text) and at
+  +/-30, 45 and 60 degrees (slanted dimensions). Vertical text is also read
+  in small tiles, which finds it much better than a whole-page read.
+- Where the OCR sees a lone diameter symbol but not the number next to it,
+  that spot is read again, zoomed in.
+- The best reading per place wins; small symbols OCR often drops (degree,
+  plus/minus) are kept when any pass saw them.
+- Zone references (e.g. `4-C`) come from the sheet's own border markers,
+  so they follow each drawing's own grid.
+- The page is also read in overlapping tiles, which finds small
+  dimensions the full-page read misses. Set the environment variable
+  `OCR_TILES=0` to skip this if speed matters more than completeness.
+- Conversion runs in the background and the page refreshes itself, so
+  slow OCR on a NAS CPU doesn't hit proxy/Cloudflare timeouts.
+
+OCR is still less reliable than a real text layer: stacked tolerances and
+GD&T frames are sometimes split or misread. The last column of every row
+keeps the raw text that was read, so you can always see what was found.
 
 ## Files
 
@@ -144,3 +181,11 @@ results here.
 - `templates/index.html`, `templates/results.html` — pages.
 - `static/style.css` — styling.
 - `requirements.txt` — Python dependencies.
+
+## Known limits
+
+- Datum triangles on a dimension (such as `ref A`) are not text and are not read.
+- Slanted text and very small print can still be misread by the OCR; the last
+  column keeps the raw text so you can see what was found.
+- On a NAS CPU a large A2 drawing can take a few minutes with OCR; the page
+  refreshes itself while it works.

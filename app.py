@@ -82,12 +82,14 @@ def convert():
     uploaded.save(pdf_path)
 
     (work_dir / "original_name.txt").write_text(uploaded.filename)
+    uploaded_name = uploaded.filename
 
     # Run the extraction in the background: OCR on a NAS CPU can take
     # longer than Cloudflare / the reverse proxy will wait for one request.
     def work():
         try:
-            core.process_pdf(pdf_path, work_dir, log=lambda *_: None)
+            core.process_pdf(pdf_path, work_dir, log=lambda *_: None, source_name=uploaded_name)
+            (work_dir / "done.txt").write_text("ok")      # every output file exists now
         except Exception as e:  # shown to the user on the results page
             (work_dir / "error.txt").write_text(str(e))
 
@@ -108,7 +110,7 @@ def results(job_id):
         return redirect(url_for("index"))
 
     csv_path = d / "input_checklist.csv"
-    if not csv_path.exists():
+    if not (d / "done.txt").exists() or not csv_path.exists():
         return render_template("processing.html", base=base)
 
     preview = read_preview(csv_path) if csv_path.exists() else {"meta": [], "header": [], "rows": [], "total": 0}
@@ -132,6 +134,18 @@ def download(job_id):
     original_name = (d / "original_name.txt").read_text().strip() if (d / "original_name.txt").exists() else "document.pdf"
     base = Path(original_name).stem
     return send_file(path, as_attachment=True, download_name=f"{base}_checklist.csv", mimetype="text/csv")
+
+
+@app.route("/download-xlsx/<job_id>")
+def download_xlsx(job_id):
+    d = job_dir(job_id)
+    path = d / "input_checklist.xlsx"
+    if not path.exists():
+        abort(404)
+    original_name = (d / "original_name.txt").read_text().strip() if (d / "original_name.txt").exists() else "document.pdf"
+    return send_file(path, as_attachment=True,
+                     download_name=f"{Path(original_name).stem}_checklist.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.route("/download-pdf/<job_id>")

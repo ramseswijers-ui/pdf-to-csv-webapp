@@ -6,3 +6,4 @@ reportlab
 pypdf
 Pillow
 numpy<2
+openpyxl

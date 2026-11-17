@@ -19,7 +19,8 @@
       </div>
 
       <div class="actions" style="margin-bottom: 28px;">
-        <a class="btn" href="{{ url_for('download', job_id=job_id) }}">Download CSV</a>
+        <a class="btn" href="{{ url_for('download_xlsx', job_id=job_id) }}">Download Excel</a>
+        <a class="btn secondary" href="{{ url_for('download', job_id=job_id) }}">Download CSV</a>
         <a class="btn" href="{{ url_for('download_pdf', job_id=job_id) }}">Download PDF with balloons</a>
         <a class="btn secondary" href="{{ url_for('index') }}">Convert another PDF</a>
       </div>
